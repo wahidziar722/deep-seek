@@ -1,12 +1,18 @@
+import os
 import logging
+import asyncio
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from openai import OpenAI
+from flask import Flask, request, jsonify
 
-# ==================== دلته خپل ټوکنونه دننه کړئ ====================
-TELEGRAM_TOKEN = "8633473710:AAHpVLtBeMbz0x7twey5HM89Ns05wc4Uf1M"
-DEEPSEEK_API_KEY = "sk-e96e824fdc9642c4aed97d823bf11fbd"
-# ====================================================================
+# ==================== تنظیمات ====================
+# د Render چاپیریال متغیرونه
+TELEGRAM_TOKEN = os.environ.get("8633473710:AAHpVLtBeMbz0x7twey5HM89Ns05wc4Uf1M")
+DEEPSEEK_API_KEY = os.environ.get("sk-e96e824fdc9642c4aed97d823bf11fbd")
+
+# Flask ایپ (د Render Health Check لپاره)
+app = Flask(__name__)
 
 # د DeepSeek کلاینټ
 deepseek_client = OpenAI(
@@ -21,13 +27,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# د کاروونکو د خبرو تاریخ ساتلو لپاره
+# د کاروونکو د خبرو تاریخ
 user_sessions = {}
 
 # ==================== د بوټ دندې ====================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """د /start کمانډ"""
     user = update.effective_user
     welcome_text = f"""
 🌟 **سلام {user.first_name}!** 🌟
@@ -40,124 +45,123 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /start - بوټ پیلول
 /help - مرسته
 /clear - د خبرو تاریخ پاکول
-
-📝 **زه کولی شم:**
-• هرې پوښتنې ته ځواب ووایم
-• لیکنې، شعرونه جوړ کړم
-• د پروګرام کولو مرسته وکړم
-• ژباړه وکړم
     """
     await update.message.reply_text(welcome_text, parse_mode="Markdown")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """د /help کمانډ"""
     help_text = """
 📖 **لارښود:**
-
 • ما ته مستقیم خپل متن واستوئ
-• زه به تاسو ته هوښیار ځواب درکړم
-
-**کمانډونه:**
-/start - بوټ پیلول
-/help - دا لارښود
-/clear - د خبرو تاریخ پاکول
+• /clear - د خبرو تاریخ پاکول
 
 **بېلګې:**
 • "د پښتو یو شعر وایه"
 • "په پایتون کې د کیلکولیټر کوډ وليکه"
-• "د افغانستان تاریخ لنډ کړه"
     """
     await update.message.reply_text(help_text, parse_mode="Markdown")
 
 async def clear_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """د /clear کمانډ - د خبرو تاریخ پاکول"""
     user_id = str(update.effective_user.id)
     if user_id in user_sessions:
         del user_sessions[user_id]
-        await update.message.reply_text("🧹 ستاسو د خبرو تاریخ په بریالیتوب سره پاک شو!")
+        await update.message.reply_text("🧹 ستاسو د خبرو تاریخ پاک شو!")
     else:
-        await update.message.reply_text("📭 ستاسو لپاره کوم تاریخ نشته چې پاک شي.")
+        await update.message.reply_text("📭 کوم تاریخ نشته چې پاک شي.")
 
 async def get_deepseek_response(user_id: str, prompt: str) -> str:
-    """د DeepSeek API څخه هوښیار ځواب ترلاسه کول"""
-    
-    # که نوی کاروونکی وي، د هغه لپاره نوی تاریخ پیل کړئ
     if user_id not in user_sessions:
         user_sessions[user_id] = [
-            {"role": "system", "content": "ته یو ګټور، دوستانه او هوښیار مرستیال یې. ته په پښتو، دری او انګلیسي ژبو پوهیږې. تل په ښه اخلاقو سره ځواب ورکوه."}
+            {"role": "system", "content": "ته یو ګټور مرستیال یې چې په پښتو، دری او انګلیسي خبرې کوی."}
         ]
     
-    # د کارونکي پیغام تاریخ ته اضافه کړئ
     user_sessions[user_id].append({"role": "user", "content": prompt})
     
-    # که تاریخ ډېر اوږد شو (۲۰ پیغامونو څخه زیات)، نو لنډ یې کړئ
     if len(user_sessions[user_id]) > 20:
         user_sessions[user_id] = user_sessions[user_id][:1] + user_sessions[user_id][-10:]
     
     try:
-        # د DeepSeek API ته غوښتنه
         response = deepseek_client.chat.completions.create(
             model="deepseek-chat",
             messages=user_sessions[user_id],
-            temperature=0.7,  # تخلیقي کچه (0 = کم، 1 = ډېر)
+            temperature=0.7,
             max_tokens=2000
         )
-        
-        # د API څخه ځواب ترلاسه کړئ
-        bot_reply = response.choices[0].message.content
-        
-        # د بوټ ځواب تاریخ ته اضافه کړئ
-        user_sessions[user_id].append({"role": "assistant", "content": bot_reply})
-        
-        return bot_reply
-        
+        reply = response.choices[0].message.content
+        user_sessions[user_id].append({"role": "assistant", "content": reply})
+        return reply
     except Exception as e:
-        logger.error(f"DeepSeek API تېروتنه: {e}")
-        return "😔 بخښنه غواړم، یوه تخنیکي ستونزه رامنځته شوه. مهرباني وکړئ بیا هڅه وکړئ."
+        logger.error(f"DeepSeek تېروتنه: {e}")
+        return "😔 بخښنه غواړم، یوه ستونزه رامنځته شوه. بیا هڅه وکړئ."
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """د کارونکي د متن پیغام پروسس کول"""
     user_message = update.message.text
     user_id = str(update.effective_user.id)
-    user_name = update.effective_user.first_name
     
-    # کارونکي ته خبر ورکړئ چې بوټ ځواب لیکي
     await update.message.chat.send_action(action="typing")
-    
-    # د DeepSeek څخه ځواب ترلاسه کړئ
-    bot_reply = await get_deepseek_response(user_id, user_message)
-    
-    # ځواب کارونکي ته واستوئ
-    await update.message.reply_text(bot_reply)
+    reply = await get_deepseek_response(user_id, user_message)
+    await update.message.reply_text(reply)
 
-async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """د ناپېژندل شویو کمانډونو لپاره"""
-    await update.message.reply_text("❓ بخښنه غواړم، زه دا کمانډ نه پوهیږم. د مرستې لپاره /help وکاروئ.")
+# ==================== د Telegram بوټ ترتیب ====================
 
-# ==================== اصلي دنده ====================
-
-def main():
-    """بوټ پیل کړئ"""
-    print("🚀 بوټ روان دی...")
-    print("📡 د پیغامونو اوریدلو ته چمتو دی...")
-    print("⏹️ د بندولو لپاره Ctrl+C فشار کړئ")
-    
-    # د بوټ غوښتنلیک جوړ کړئ
+def setup_telegram_bot():
+    """د Telegram بوټ جوړول او تنظیمول"""
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     
-    # کمانډونه اضافه کړئ
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("clear", clear_command))
-    
-    # د متن پیغامونو لپاره (چې کمانډ نه وي)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    # د ناپېژندل شویو کمانډونو لپاره
-    application.add_handler(MessageHandler(filters.COMMAND, unknown_command))
+    return application
+
+# ==================== Flask Webhook (د Render لپاره) ====================
+
+telegram_app = setup_telegram_bot()
+
+@app.route(f"/webhook/{TELEGRAM_TOKEN}", methods=["POST"])
+async def webhook():
+    """د Telegram څخه د تازه معلوماتو ترلاسه کول"""
+    try:
+        update_data = request.get_json()
+        if update_data:
+            update = Update.de_json(update_data, telegram_app.bot)
+            await telegram_app.process_update(update)
+        return jsonify({"status": "ok"}), 200
+    except Exception as e:
+        logger.error(f"Webhook تېروتنه: {e}")
+        return jsonify({"status": "error"}), 500
+
+@app.route("/health", methods=["GET"])
+def health_check():
+    """د Render Health Check لپاره"""
+    return jsonify({"status": "healthy", "bot": "running"}), 200
+
+@app.route("/", methods=["GET"])
+def index():
+    """د اصلي پاڼې لپاره"""
+    return jsonify({"message": "DeepSeek Telegram Bot is running!", "status": "active"}), 200
+
+# ==================== د Webhook ثبتول ====================
+
+async def set_webhook():
+    """په Telegram کې د Webhook آدرس ثبتول"""
+    webhook_url = f"https://{os.environ.get('RENDER_EXTERNAL_HOSTNAME')}/webhook/{TELEGRAM_TOKEN}"
     
-    # بوټ پیل کړئ (polling طریقه)
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    async with telegram_app:
+        await telegram_app.bot.set_webhook(
+            url=webhook_url,
+            drop_pending_updates=True
+        )
+        logger.info(f"Webhook په دې آدرس ثبت شو: {webhook_url}")
+
+# ==================== اصلي دنده ====================
 
 if __name__ == "__main__":
-    main()
+    port = int(os.environ.get("PORT", 8080))
+    
+    # د Webhook ثبتول (یو ځل)
+    asyncio.run(set_webhook())
+    
+    # Flask سرور پیل کړئ
+    logger.info(f"بوټ په پورټ {port} روان دی...")
+    app.run(host="0.0.0.0", port=port)
